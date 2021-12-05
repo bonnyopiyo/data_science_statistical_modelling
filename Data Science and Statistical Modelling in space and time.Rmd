@@ -1,0 +1,855 @@
+---
+title: "Data Science and Statistical Modelling in space and time"
+output: pdf_document
+---
+
+# Data Science and Statistical Modelling in space and time
+
+## Libraries
+
+```{r, message=FALSE,warning=FALSE}
+if(!require("geoR")) install.packages("geoR");
+library(geoR)
+
+if(!require("dlm")) install.packages("dlm");
+library(dlm)
+
+if(!require("GGally")) install.packages("GGally");
+library(GGally)
+library(ggplot2)
+library(dplyr)
+
+if(!require("bestNormalize")) install.packages("bestNormalize");
+library(bestNormalize)
+
+if(!require("lubridate")) install.packages("lubridate");
+library(lubridate)
+
+if(!require("tidyr")) install.packages("tidyr");
+library(tidyr)
+library(stringr)
+
+if(!require("xts")) install.packages("xts");
+library(xts)
+
+if(!require("forecast")) install.packages("forecast");
+library(forecast)
+
+if(!require("Metrics")) install.packages("Metrics");
+library(Metrics)
+
+if(!require("devtools")) install.packages("devtools");
+if (!require("rspatial")) devtools::install_github('rspatial/rspatial');
+library(rspatial)
+
+if(!require("raster")) install.packages("raster");
+library(raster)
+
+if(!require("spdep")) install.packages("spdep");
+library(spdep)
+
+if(!require("sp")) install.packages("sp");
+library(sp)
+
+set.seed(42)
+if(!require("spatialreg")) install.packages("spatialreg");
+library(spatialreg)
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Section A: Spatial Modelling
+
+Interpolating a set of sea surface temperature data for one month in the Kuroshio off Japan onto a grid with a resolution  of .5° in both E and N directions
+> **Assumption:** Earth is flat
+
+## Data Loading
+
+```{r, warning=FALSE, message=FALSE}
+# Read data
+data <- read.csv("kuroshio.csv")
+gdata <- as.geodata(data, coords.col = 2:3, data.col = 6)
+# geoR can't handle different data values in the same position (What would such data tell us about)
+
+# Find the duplicate data 
+dup <- dup.coords(gdata)
+
+# Jitter the duplicate coordinates i.e. add a small random number to each x and y co-ordinate
+gdata2 <- jitterDupCoords(gdata,max=0.1,min=0.05)
+```
+
+## 1. numerical and graphical summaries of the data.
+
+```{r}
+# Get the summary of jittered coordinates
+summary(gdata2)
+```
+
+```{r}
+# visualize 
+plot(gdata2, trend="1st")
+```
+
+```{r}
+summary(data)
+```
+
+```{r, fig.cap="Distributions of the Columns", message=FALSE, warning=FALSE}
+data %>%
+  dplyr::select(-date,-id)%>%
+  ggpairs()
+```
+
+
+From the numerical summary we can see the data has missing values only in the `sst` and `at` columns. Outliers exist in `sf` columns, leading to skewness in the distribution of this column. Majority of the variables have negative correlation such as (`sst` and `pt`, `at` and `af`). The plotted geospatial graph distribution shows that the residuals can be normally distributed in absence of the outliers.
+
+## 2. Check Isotropy
+```{r, message=FALSE, warning=FALSE}
+# use variog to check for isotropy
+isotropy <- variog4(gdata2, max.dist=1)
+plot(isotropy)
+```
+
+From the directional variograms, their is a need for a trend in spatial model.
+
+## 3. Fit Spatial Model
+
+We will try various models and pick the one that fits best
+
+```{r, warning=FALSE, message=FALSE}
+isotropy <- variog(gdata2, uvec=seq(0,1,l=11))
+
+# Fitting models with nugget fixed to zero
+ml <- likfit(gdata2, ini = c(1,0.5), fix.nugget = T)
+reml <- likfit(gdata2, ini = c(1,0.5), fix.nugget = T, method = "RML")
+ols <- variofit(isotropy, ini = c(1,0.5), fix.nugget = T, weights="equal")
+wls <- variofit(isotropy, ini = c(1,0.5), fix.nugget = T)
+	 
+# Fitting models with a fixed value for the nugget
+ml.fn <- likfit(gdata2, ini = c(1,0.5), fix.nugget = T, nugget = 0.15)
+reml.fn <- likfit(gdata2, ini = c(1,0.5), fix.nugget = T, nugget = 0.15, method = "RML")
+ols.fn <- variofit(isotropy,ini = c(1,0.5), fix.nugget = T, nugget = 0.15, weights="equal")
+wls.fn <- variofit(isotropy, ini = c(1,0.5), fix.nugget = T, nugget = 0.15)
+
+# Fitting models estimated nugget
+ml.n <- likfit(gdata2, ini = c(1,0.5), nug = 0.5)
+reml.n <- likfit(gdata2, ini = c(1,0.5), nug = 0.5, method = "RML")
+ols.n <- variofit(isotropy, ini = c(1,0.5), nugget=0.5, weights="equal")
+wls.n <- variofit(isotropy, ini = c(1,0.5), nugget=0.5)
+
+```
+
+```{r, warning=FALSE}
+# Now, plotting fitted models against empirical variogram
+par(mfrow = c(1,3))
+plot(isotropy, main = expression(paste("fixed ", tau^2 == 0)))
+lines(ml, max.dist = 1)
+lines(reml, lwd = 2, max.dist = 1)
+lines(ols, lty = 2, max.dist = 1)
+lines(wls, lty = 2, lwd = 2, max.dist = 1)
+legend(
+  0.5, 
+  2, 
+  legend=c("ML","REML","OLS","WLS"),
+  lty=c(1,1,2,2),
+  lwd=c(1,2,1,2), 
+  cex=0.7
+)
+
+plot(isotropy, main = expression(paste("fixed ", tau^2 == 0.15)))
+lines(ml.fn, max.dist = 1)
+lines(reml.fn, lwd = 2, max.dist = 1)
+lines(ols.fn, lty = 2, max.dist = 1)
+lines(wls.fn, lty = 2, lwd = 2, max.dist = 1)
+legend(
+  0.5, 
+  2, 
+  legend=c("ML","REML","OLS","WLS"), 
+  lty=c(1,1,2,2), 
+  lwd=c(1,2,1,2), 
+  cex=0.7
+)
+
+plot(isotropy, main = expression(paste("estimated  ", tau^2)))
+lines(ml.n, max.dist = 1)
+lines(reml.n, lwd = 2, max.dist = 1)
+lines(ols.n, lty = 2, max.dist = 1)
+lines(wls.n, lty =2, lwd = 2, max.dist = 1)
+legend(
+  0.5, 
+  2, 
+  legend=c("ML","REML","OLS","WLS"), 
+  lty=c(1,1,2,2), 
+  lwd=c(1,2,1,2), 
+  cex=0.7
+)
+
+par(par(no.readonly = TRUE))
+```
+
+
+The directional variogram revealed a trend in spatial model therefore the best spatial model that will be fitted with this data will be based on likelihood based parameter estimation for Gaussian Random Fields.
+
+```{r, warning=FALSE, message=FALSE}
+print(ml.n)
+summary(ml.n)
+```
+The maximum likelihood of the model is -3680.
+
+## 4. Fit by Bayesian methods
+
+Bayesian methods is implemented by the function `krige.bayes`. It can be performed for different "degrees of uncertainty", hence the model parameters can be treated as fixed or random.
+We will consider a model without nugget and including uncertainty in the mean, sill and range parameters.
+
+```{r, message=FALSE, warning=FALSE}
+baye.model <- krige.bayes(
+  gdata2, 
+  loc = matrix(
+    c(0.2, 0.6, 0.2, 1.1, 0.2, 0.3, 1.0, 1.1), 
+    ncol=2
+  ), 
+  prior = prior.control(
+    phi.discrete = seq(0,5,l=101), phi.prior="rec"
+  ),
+  output=output.control(n.post=5000)
+)
+```
+
+
+## 5. Differences between the two methods of estimation
+
+```{r, message=FALSE, warning=FALSE}
+print("Bayesian Methods")
+print(summary(baye.model))
+
+print("Spatial Models")
+print(summary(ml.n))
+```
+
+From the comparison, the spatial models seems to be the better fit than the bayesian method, it has a Practical Range with cor=0.05 for asymptotic range: 29.3194. The bayesian method has a mean of 15.23 and a variance of 22.37 while the spatial model has mean component of 14.4155.
+
+
+# B: Time Series Modelling
+
+## 1. Which equation corresponds to which plot
+
+* Fig A: equation (ii); the introduced coefficient $\rho=0.02$ the figure matches the equation since the cycles are narrow and almost close to each other. Where error (white noise) at time point remains constant, the equation differs with equation (iii) since it has a smaller $\rho$ coefficient.
+
+* Figure B: equation (iii), as explained in A above, the $\rho$ coefficient in B is larger, resulting to broader cycles. Where the error $\in_t$ is constant.
+
+* Figure C: equation (1) this figure shows an aggregated time series that can be based on quaterly or seasonal data hence resulting to an increase point with increase in aggregated time point.
+
+* Figure D: equation (v) this because the figure depends on 2 previous time points ($0.1X_{t-1}$, $0.9X_{t-2}$) to determine the current position. Based on this trend, the size of the cycles increases almost doubly with the previous trends
+
+* Figure E: equation (iv) this is because of a negative in the $\rho$ coefficient, as a result of this, it will form a decrease in the trend of the graph. 
+
+## 2. Appropriate ARMA model for the five series
+* The PCAF, Series A has cut off on PACF curve after 2nd lag which means this is mostly an Autoregressive AR(2) Model.
+* In Series, the graph has a cut off on ACF, Series B curve after 2nd lag which means this is mostly a Moving Average MA(2) process.
+* Series C is the same as the Series B in that the graph has a cut off on ACF, Series C curve after 2nd lag which means this is mostly a Moving Average MA(2) Process.
+* In Series D, both ACF and PACF are demonstrating a gradual decreasing pattern (slow decay) hence the ARMA (1,1) model would be appropriate for the series.
+* In Series E, PACF Series E cuts off on PACF curve after the 1st lag which means this is mostly an Autoregressive AR(1) Model
+
+## 3. 
+
+The data used, `overturning.csv`, are the measured strength of the overturning in the North Atlantic from moorings at 26N between April 2004 and march 2014.
+
+```{r}
+overturning <- read.csv("overturning.csv")
+head(overturning)
+```
+
+
+
+### a. averaging the data to quaterly means
+
+```{r, message=FALSE}
+quaterly_means <- overturning %>%
+  group_by(year,Quarter) %>%
+  summarise(
+    Mean_Days_Since_Start=mean(Days_since_start),
+    Mean_Overturning_Strength=mean(Overturning_Strength)
+  )
+
+summary(quaterly_means)
+```
+```{r, message=FALSE}
+quaterly_means %>%
+  ggpairs()
+```
+There are potential outliers in the average quaterly overturning strengths, from the distribution ploted, the graph is left skewed.
+
+```{r}
+quaterly_means_ts <- ts(quaterly_means)
+summary(quaterly_means_ts)
+```
+
+
+### b. Fitting ARMA and ARIMA model to the data
+
+```{r}
+overturning2 <- overturning %>%
+  mutate(date=paste(year,month,day, sep="-"))%>%
+  dplyr::select(date,Overturning_Strength)%>%
+  mutate(date=ymd(date)) %>%
+  group_by(date)%>%
+  summarise(Overturning_Strength=mean(Overturning_Strength))
+
+overturning2_xts <- as.xts(overturning2[,-1], order.by = overturning2$date)
+AR1 <- arima(overturning2_xts, c(1,0,1))
+checkresiduals(AR1)
+```
+```{r}
+MA <- arima(overturning2_xts, order = c(0,0,1))
+checkresiduals(MA)
+```
+```{r}
+# Find the best Model
+best.model <- auto.arima(overturning2_xts)
+summary(best.model)
+```
+The best and appropriate model is ARIMA(1, 1, 0) with Drift that has 2.04 MAPE.
+The plot below is it's residuals.
+
+```{r}
+checkresiduals(best.model)
+```
+
+```{r}
+# predict 6 3-month periods from April 2014 to september 2015
+arima.forecast <- forecast(best.model, h=6)
+arima.forecast
+```
+
+
+### c. Fitting DLM to the data including both trend and a seasonal component
+
+```{r}
+fn <- function(parm) {
+    dlmModPoly(order = 1, dV = exp(parm[1]), dW = exp(parm[2]))
+}
+dlm.fit <- dlmMLE(overturning2_xts, rep(0, 2), build = fn, hessian = TRUE)
+dlm.forcast <- dlmForecast(
+  dlmFilter(
+    overturning2_xts, 
+    mod = fn(dlm.fit$par)
+  ), nAhead=6
+)
+dlm.forcast$a
+```
+
+
+### d. Results Comparison
+
+```{r}
+preds_comparison <- data.frame(ARIMA=arima.forecast$mean, dlm.forcast$a)
+names(preds_comparison) <- c("ARIMA_Preds", "DLM_Preds")
+preds_comparison
+```
+
+
+The DLM hasn't yielded good results (it has predicted same values, 12.4824) as compared to ARIMA(1,1,0), ARIMA has the best fit has has smaller error as compared to DLM. Hence for future predictions, ARIMA model would be the preferred model.
+
+# C. Project
+
+2 Data sets used are from National Oceanic and Atmospheric Administration (NOAA)'s National Centers for Environmental Information (NCEI):
+
+* `metadataCA.txt`: has a number of sites, their elevations above sea level in feet, their geographic coordinates in latitude and longitude, and in the two right hand most columns, a reference point's coordinates on the west coast of California linked to the site that can be used to learn the site's distance from the ocean.
+* `MaxTempCalifornia.csv`: has maximum daily temperatures in degrees Celsius for those sites from Jan 1, 2012 to December 30, 2012
+
+## Initial Data Analysis
+
+```{r}
+# Read the csv datasets
+metadataCA <- read.csv("metadataCA.csv")
+maxtempcalifornia <- read.csv("MaxTempCalifornia.csv")
+
+# preview the heads
+head(metadataCA)
+head(maxtempcalifornia)
+
+# Tranform the data from wide to long
+maxtempcalifornia_long <- maxtempcalifornia %>%
+  gather(Location, Max_Temp, -c(X))
+maxtempcalifornia_long$Location <- maxtempcalifornia_long$Location %>%
+  str_replace("\\.", " ")
+maxtempcalifornia_long$Date <- ymd(maxtempcalifornia_long$X)
+maxtempcalifornia_long <- maxtempcalifornia_long %>%
+  subset(select=-X)
+head(maxtempcalifornia_long)
+```
+
+### 1. Numerical and Graphical summaries of the data from each site
+```{r}
+summary(metadataCA)
+summary(maxtempcalifornia_long)
+```
+From this summary, we can see that the maximum value in `Elev`, and `Max_Temp` columns are very extreme, this shows that there are outliers in the datasets. The scatter matrix below reveals more of the datasets.
+
+```{r fig.width=15, warning=FALSE, message=FALSE}
+metadataCA %>%
+  ggpairs()
+```
+From the above diagram, checking `Elev` distribution is right skewed, this is as a result of outliers.
+
+```{r, warning=FALSE, message=FALSE}
+maxtempcalifornia_long %>%
+  ggpairs()
+```
+The `Max_Temp` Column was almost a normal distribution were it not for the outliers present forcing it to be a little bit right skewed.
+
+### 2. Distributions of the data at each location
+```{r fig.width=15, warning=FALSE, message=FALSE}
+for(location in unique(maxtempcalifornia_long$Location)){
+  p <- maxtempcalifornia_long %>%
+    filter(Location==location) %>%
+    ggplot(aes(x=Max_Temp))+
+    geom_histogram()+
+    ggtitle(paste(location,"Distribution"))
+  print(p)
+}
+```
+For each location, the data doesn't look Normally distributed, therefore transformation for each site needs to be done. The **Ojai** location is almost normally distributed.
+For this transformation we will use `bestNormalize` package to transform the data at each site to be normally distributed
+
+```{r, warning=FALSE, message=FALSE}
+maxtempcalifornia_long$Normalized_Max_Temp <- 0
+for(location in unique(maxtempcalifornia_long$Location)){
+  maxtempcalifornia_long[maxtempcalifornia_long$Location==location, c("Normalized_Max_Temp")] <- bestNormalize(maxtempcalifornia_long[maxtempcalifornia_long$Location==location,c("Max_Temp")])$x.t
+}
+for(location in unique(maxtempcalifornia_long$Location)){
+  p <- maxtempcalifornia_long %>%
+    filter(Location==location) %>%
+    ggplot(aes(x=Normalized_Max_Temp))+
+    geom_histogram()+
+    ggtitle(paste(location,"Normalized Distribution"))
+  print(p)
+}
+```
+
+After Normalizing based on each location, it now seems reasonable and the distributions are now normally distributed.
+
+### 3. Monthly average (max) temperatures for each site
+```{r, message=FALSE, warning=FALSE}
+monthly_average_temp<-maxtempcalifornia_long %>%
+  group_by(Location, Month=month(Date, label = T)) %>%
+  summarise(Monthly_Average_Temp=mean(Max_Temp))
+```
+
+```{r, message=FALSE, warning=FALSE}
+for(location in unique(monthly_average_temp$Location)){
+  p<-monthly_average_temp %>%
+    filter(Location==location) %>%
+    dplyr::select(Month, Monthly_Average_Temp) %>%
+    ggplot(aes(Month,Monthly_Average_Temp)) +
+    geom_col() +
+    ggtitle(paste("Monthly Average for ", location))+
+    geom_text(aes(label = round(Monthly_Average_Temp, 2)), vjust = -0.5)
+  print(p)
+}
+```
+From the above plots, it seems that the month of Jun-July records the highest average temperatures in various locations. Low monthly average (max) temperatures are recorded in the first quarter.
+
+### 4. Statistical Analysis of whether there are differences in (max) temperatures at different locations, and whether there are (statistically significant) differences between months.
+
+To determine whether there are differences in (max) temperatures at different locations, and whether there are differences between months, we will Anova test.
+
+```{r}
+summary(mod.aov <- aov(
+  Monthly_Average_Temp ~ Location + Month,
+  data = monthly_average_temp
+))
+```
+
+The `p-value` <$0.05$ indicating that the ANOVA has detected a significant effect of the factors which in this case is different locations and different months. Below are the Multiple comparisons (post-hoc comparisons) of different locations and different Months to help quantify the differences between groups and determine the groups that significantly differ from each other..
+
+```{r}
+TukeyHSD(mod.aov)
+```
+
+
+## Prediction
+
+### 5. Developing a time series model of San Francisco and applying it to data from other locations to predict maximum temperatures for all locations, for the 1st to 8th August 2012
+
+```{r, warning=FALSE}
+# Select only the San Francisco data
+sanfrancisco <- maxtempcalifornia_long %>%
+  filter(Location=="San Francisco") %>%
+  dplyr::select(Date, Max_Temp)
+
+# Create a time Series
+sanfrancisco_xts = xts(sanfrancisco[, -1], order.by = sanfrancisco$Date)
+head(sanfrancisco_xts)
+
+
+```
+```{r, warning=FALSE}
+# create and Find the best ARIMA model
+fit <- auto.arima(
+  sanfrancisco_xts
+)
+plot(forecast(fit, h=20))
+```
+```{r}
+summary(fit)
+```
+
+```{r, warning=FALSE}
+# Select the predicted for the 1st-8th August 2012
+pred_period = yday(
+  seq(ymd('2012-08-01'),ymd('2012-08-08'), by='1 day')
+)
+
+# Get predictions of the entire year
+preds <- forecast(fit, h=365)$fitted
+
+# Predicted Maximum temperature for all locations for 1st-8th August
+req_preds <- preds[pred_period]
+print(req_preds)
+```
+Let's compare the predicted maximum temperatures with the observed measurements in all locations.
+
+```{r, warning=FALSE}
+cal_01_08<-maxtempcalifornia_long%>%
+  filter((Date>="2012-08-01")&(Date<="2012-08-08"))
+cal_01_08$pred <- req_preds
+cal_01_08
+```
+
+To determine how the model performed, we will check the Root Mean Squared Error, which is an estimator of the Root average of squares of the errors.
+
+```{r, warning=FALSE}
+rmse(cal_01_08$Max_Temp, cal_01_08$pred)
+```
+The summary below is how the model fits and predicts the data.
+
+```{r, warning=FALSE}
+summary(fit)
+```
+The `auto.arima()` function in R uses a combination of unit root tests, minimization of the AIC and MLE to obtain an ARIMA model. `auto.arima` determines the best ARIMA model to be used as the time series model. It chose ARIMA(0,1,3) that means the ARIMA model has 0 autoregressive term, 1 seasonal autoregressive term and 1 seasonal difference term. The training set errors measures are as indicated in the summary. We can see that the Root Mean Squared Error is $2.52$
+
+### 6. Developing a spatial model to predict maximum temperatures for San Fransisco and Death Valley for 1st Jan 2012 using only data from Napa, San Diego, Fresno, Santa Cruz, Ojai, Barstow, LA and CedarPark
+
+```{r, warning=FALSE, message=FALSE}
+# Merge Metadata with Maximum Temperature
+merged <- merge(
+  maxtempcalifornia_long, 
+  metadataCA, 
+  by.x="Location", 
+  by.y="ï..Location"
+)
+# specify columns containing coordinates of locations
+coordinates(merged) <- c("Long", "Lat")
+
+# set coordinate reference system
+crs.geo1 <- CRS("+proj=longlat")
+proj4string(merged) <- crs.geo1
+
+# Select from locations that are not Redding, San Francisco and Death Valley
+train_data <- merged[
+  !merged$Location %in% c("Redding", "San Francisco", "Death Valley"),
+]
+# Fit Spatial Lag Model
+spl.model <- lagsarlm(
+  Max_Temp~Elev, 
+  data=train_data,
+  nb2listw(
+    knn2nb(
+      knearneigh(coordinates(train_data), longlat = TRUE)
+    )
+  )
+)
+```
+
+```{r, warning=FALSE, message=FALSE}
+test_data <- merged[
+  (merged$Location %in% c("San Francisco", "Death Valley")) & (merged$Date=="2012-01-01"),
+]
+test_data_lw <- nb2listw(
+  knn2nb(
+    knearneigh(coordinates(test_data), longlat = T)
+  )
+)
+row.names(test_data) = attributes(test_data_lw)$region.id
+spl.preds <- predict(
+  spl.model, 
+  test_data,
+  test_data_lw
+)
+print(spl.preds)
+```
+
+
+How the model performs and measures of uncertainty for the predictions
+
+```{r, warning=FALSE, message=FALSE}
+summary(spl.model)
+```
+
+
+\newpage
+
+# Report
+## 7. Analysis of maximum temperatures over both space and time
+
+### Introduction
+
+This report outlines the analysis of maximum temperatures over both space and time for California. The aim of this analysis is to summarize the spatial and temporal variations in maximum temperatures in California in 2012 using various spatial methods and time series analysis. 
+
+### Initial Data Analysis
+
+The 2 data files that have been used in coming up with this analysis are from National Oceanic and Atmospheric Administration (NOAA)'s National Centers for Environmental Information (NCEI). The data sets are:
+
+- `metadataCA.txt`: has a number of sites, their elevations above sea level in feet, their geographic coordinates in latitude and longitude, and in the two right hand most columns, a reference point's coordinates on the west coast of California linked to the site that can be used to learn the site's distance from the ocean.
+
+```{r, echo=FALSE}
+head(metadataCA)
+```
+
+
+- `MaxTempCalifornia.csv`: has maximum daily temperatures in degrees Celsius for those sites from Jan 1, 2012 to December 30, 2012.
+
+```{r, echo=FALSE}
+head(maxtempcalifornia)
+```
+
+The following are the summaries for the 2 datasets
+
+```{r, echo=FALSE}
+summary(metadataCA)
+summary(maxtempcalifornia_long)
+```
+From this summary, we can see that the maximum value in `Elev` (from metadataCA), and `Max_Temp` (from maxtempcalifornia dataset) columns are very extreme, this shows that there are outliers in the datasets. The scatter matrix below reveals more of the datasets.
+
+```{r, echo=FALSE, message=FALSE, fig.cap="MetadataCA Scatter Matrix"}
+metadataCA %>%
+  ggpairs()
+```
+
+From the above diagram, checking `Elev` distribution is right skewed, this is as a result of outliers.Other distributions seems okay.
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+maxtempcalifornia_long %>%
+  ggpairs()
+```
+
+The `Max_Temp` Column was almost a normal distribution were it not for the outliers present forcing it to be a little bit right skewed.
+
+### Methods
+
+For the main analysis, the following methods were done:
+
+* **Normalization**: Normalization was done to the `Max_Temp` column in order to minimize redundancy and impute the outliers/anomalies with considerable values
+* **Statistical Analysis**: Statistical Analysis to determine whether there are differences in (max) temperatures at different locations, and whether there are (statistically significant) differences between months.
+* **Prediction**:
+  * Develop a time series model to predict maximum temperatures in various locations
+  * Develop a spatial model to predict maximum temperatures from San Francisco and Death Valley.
+
+For each location, the data doesn't look Normally distributed, therefore transformation for each site was done. The **Ojai** location is almost normally distributed.
+For this transformation `bestNormalize` package was used to transform the data at each site to be normally distributed. The data for each location were normalized, in order to form a normal distribution at each location, after normalizing, this is how it looked like.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+maxtempcalifornia_long$Normalized_Max_Temp <- 0
+for(location in unique(maxtempcalifornia_long$Location)){
+  maxtempcalifornia_long[maxtempcalifornia_long$Location==location, c("Normalized_Max_Temp")] <- bestNormalize(maxtempcalifornia_long[maxtempcalifornia_long$Location==location,c("Max_Temp")])$x.t
+}
+for(location in unique(maxtempcalifornia_long$Location)){
+  p <- maxtempcalifornia_long %>%
+    filter(Location==location) %>%
+    ggplot(aes(x=Normalized_Max_Temp))+
+    geom_histogram()+
+    ggtitle(paste(location,"Normalized Distribution"))
+  print(p)
+}
+```
+
+
+### Results
+
+From the analysis, it was found that the months of Jun-July records the highest average temperatures in many locations in the California State. Low monthly average (max) temperatures are recorded in the first quarter (Jan- April). The plots below shows the montly average temperature for the locations in California.
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+for(location in unique(monthly_average_temp$Location)){
+  p<-monthly_average_temp %>%
+    filter(Location==location) %>%
+    dplyr::select(Month, Monthly_Average_Temp) %>%
+    ggplot(aes(Month,Monthly_Average_Temp)) +
+    geom_col() +
+    ggtitle(paste("Monthly Average for ", location))+
+    geom_text(aes(label = round(Monthly_Average_Temp, 2)), vjust = -0.5)
+  print(p)
+}
+```
+From the statistical analysis to determine whether there are differences in (max) temperatures at different locations, and whether there are (statistically significant) differences between months., there was a p-value of $2e-16$.
+
+The `p-value` <$0.05$ indicating that the ANOVA has detected a significant effect of the factors which in this case is different locations and different months. Below are the Multiple comparisons (post-hoc comparisons) of different locations and different Months to help quantify the differences between groups and determine the groups that significantly differ from each other.
+
+```{r, echo=FALSE}
+summary(mod.aov <- aov(
+  Monthly_Average_Temp ~ Location + Month,
+  data = monthly_average_temp
+))
+```
+The best time series model to predict maximum temperatures in all location was determined by `auto.arima` and was found to be ARIMA(0,1,3). In comparing the actual and the predicted values, this model had a Root Mean Squared Error of $14.18539$
+
+
+### Summary
+
+* The months of Jun-July records the highest average temperatures in many locations in the California State. Low monthly average (max) temperatures are recorded in the first quarter (Jan- April).
+
+### Bibliography
+### Appendix
+
+```{r, eval=FALSE}
+# Read the datasets
+metadataCA <- read.csv("metadataCA.csv")
+maxtempcalifornia <- read.csv("MaxTempCalifornia.csv")
+
+# Preview the head
+head(metadataCA)
+head(maxtempcalifornia)
+
+# Tranform California from wide to long
+maxtempcalifornia_long <- maxtempcalifornia %>%
+  gather(Location, Max_Temp, -c(X))
+maxtempcalifornia_long$Location <- maxtempcalifornia_long$Location %>%
+  str_replace("\\.", " ")
+maxtempcalifornia_long$Date <- ymd(maxtempcalifornia_long$X)
+maxtempcalifornia_long <- maxtempcalifornia_long %>%
+  subset(select=-X)
+head(maxtempcalifornia_long)
+
+# Check the numerical summaries
+summary(metadataCA)
+summary(maxtempcalifornia_long)
+
+# plot scatter matrix
+metadataCA %>%
+  ggpairs()
+
+maxtempcalifornia_long %>%
+  ggpairs()
+
+# Distribution of data at each location
+for(location in unique(maxtempcalifornia_long$Location)){
+  p <- maxtempcalifornia_long %>%
+    filter(Location==location) %>%
+    ggplot(aes(x=Max_Temp))+
+    geom_histogram()+
+    ggtitle(paste(location,"Distribution"))
+  print(p)
+}
+
+# Normalize the locations distribution
+maxtempcalifornia_long$Normalized_Max_Temp <- 0
+for(location in unique(maxtempcalifornia_long$Location)){
+  maxtempcalifornia_long[maxtempcalifornia_long$Location==location, c("Normalized_Max_Temp")] <- bestNormalize(maxtempcalifornia_long[maxtempcalifornia_long$Location==location,c("Max_Temp")])$x.t
+}
+for(location in unique(maxtempcalifornia_long$Location)){
+  p <- maxtempcalifornia_long %>%
+    filter(Location==location) %>%
+    ggplot(aes(x=Normalized_Max_Temp))+
+    geom_histogram()+
+    ggtitle(paste(location,"Normalized Distribution"))
+  print(p)
+}
+
+# Statistical analysis
+summary(mod.aov <- aov(
+  Monthly_Average_Temp ~ Location + Month,
+  data = monthly_average_temp
+))
+
+TukeyHSD(mod.aov)
+
+# Select only the San Francisco data
+sanfrancisco <- maxtempcalifornia_long %>%
+  filter(Location=="San Francisco") %>%
+  dplyr::select(Date, Max_Temp)
+
+# Create a time Series
+sanfrancisco_xts = xts(sanfrancisco[, -1], order.by = sanfrancisco$Date)
+head(sanfrancisco_xts)
+
+# create and Find the best ARIMA model
+fit <- auto.arima(
+  sanfrancisco_xts
+)
+plot(forecast(fit, h=20))
+
+summary(fit)
+
+# Select the predicted for the 1st-8th August 2012
+pred_period = yday(
+  seq(ymd('2012-08-01'),ymd('2012-08-08'), by='1 day')
+)
+
+# Get predictions of the entire year
+preds <- forecast(fit, h=365)$fitted
+
+# Predicted Maximum temperature for all locations for 1st-8th August
+req_preds <- preds[pred_period]
+print(req_preds)
+
+# Comparison
+cal_01_08<-maxtempcalifornia_long%>%
+  filter((Date>="2012-08-01")&(Date<="2012-08-08"))
+cal_01_08$pred <- req_preds
+cal_01_08
+
+# Calculate root mean squared error
+rmse(cal_01_08$Max_Temp, cal_01_08$pred)
+
+# Merge Metadata with Maximum Temperature
+merged <- merge(
+  maxtempcalifornia_long, 
+  metadataCA, 
+  by.x="Location", 
+  by.y="ï..Location"
+)
+# specify columns containing coordinates of locations
+coordinates(merged) <- c("Long", "Lat")
+
+# set coordinate reference system
+crs.geo1 <- CRS("+proj=longlat")
+proj4string(merged) <- crs.geo1
+
+# Select from locations that are not Redding, San Francisco and Death Valley
+train_data <- merged[
+  !merged$Location %in% c("Redding", "San Francisco", "Death Valley"),
+]
+# Fit Spatial Lag Model
+spl.model <- lagsarlm(
+  Max_Temp~Elev, 
+  data=train_data,
+  nb2listw(
+    knn2nb(
+      knearneigh(coordinates(train_data), longlat = TRUE)
+    )
+  )
+)
+
+test_data <- merged[
+  (merged$Location %in% c("San Francisco", "Death Valley")) & (merged$Date=="2012-01-01"),
+]
+test_data_lw <- nb2listw(
+  knn2nb(
+    knearneigh(coordinates(test_data), longlat = T)
+  )
+)
+row.names(test_data) = attributes(test_data_lw)$region.id
+spl.preds <- predict(
+  spl.model, 
+  test_data,
+  test_data_lw
+)
+print(spl.preds)
+
+# spl model summary
+summary(spl.model)
+```
+
